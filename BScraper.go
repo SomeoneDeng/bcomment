@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"net/http"
+	"net/url"
 	"strconv"
+	"time"
 )
 
 const (
@@ -33,10 +36,15 @@ func (scraper *Scraper) ReplyConsume() {
 }
 
 // 获取某个视频下的回复
-func getReplyData(pn int, ps int, ttype int, oid int, sort int, replyChan chan data.Reply) {
+func getReplyData(pn int, ps int, ttype int, oid int, sort int, scraper *Scraper) {
 	reqString := fmt.Sprintf("%s?pn=%d&type=%d&oid=%d&sort=%d&ps=%d", REPLY_BASE_URL, pn, ttype, oid, sort, ps)
-	//println("getting replies from ---> ", reqString)
-	resp, e := http.Get(reqString)
+	a := rand.Intn(len(scraper.proxys))
+	proxy := scraper.proxys[a]
+	println(reqString)
+	println("proxy: ", proxy, " index: ", a)
+	proxyUrl, _ := url.Parse(proxy)
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyUrl)}}
+	resp, e := client.Get(reqString)
 	if e != nil {
 		println("获取reply网络错误", e.Error())
 	}
@@ -48,12 +56,14 @@ func getReplyData(pn int, ps int, ttype int, oid int, sort int, replyChan chan d
 	e = json.Unmarshal(body, &respBody)
 	if e != nil {
 		println(e.Error())
+		println(string(body))
 	}
 	for _, v := range respBody.Data.Replies {
-		replyChan <- v
+		scraper.replyChan <- v
 	}
 	if len(respBody.Data.Replies) > 0 {
-		go getReplyData(pn+1, ps, ttype, oid, sort, replyChan)
+		time.Sleep(time.Millisecond * 500)
+		go getReplyData(pn+1, ps, ttype, oid, sort, scraper)
 	}
 }
 
@@ -62,14 +72,20 @@ func getArchiveReplies(scraper *Scraper) {
 	for archive := range scraper.archiveChan {
 		pn := 1
 		// goroutine here to speed up
-		getReplyData(pn, 20, 1, archive.Aid, 0, scraper.replyChan)
+		getReplyData(pn, 20, 1, archive.Aid, 0, scraper)
 	}
 }
 
 // extract data from response
-func getArchiveData(ps int, rid int, pn int) data.ArchiveResponse {
+func getArchiveData(ps int, rid int, pn int, scraper *Scraper) data.ArchiveResponse {
 	reqString := fmt.Sprintf("%s?ps=%d&rid=%d&pn=%d", ARCHIVE_BASE_URL, ps, rid, pn)
-	resp, e := http.Get(reqString)
+	a := rand.Intn(len(scraper.proxys))
+	proxy := scraper.proxys[a]
+	println(reqString)
+	println("proxy: ", proxy, " index: ", a)
+	proxyUrl, _ := url.Parse(proxy)
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyUrl)}}
+	resp, e := client.Get(reqString)
 	if e != nil {
 		println("获取archive网络错误", e.Error())
 	}
@@ -81,22 +97,24 @@ func getArchiveData(ps int, rid int, pn int) data.ArchiveResponse {
 	e = json.Unmarshal(body, &respBody)
 	if e != nil {
 		println(e.Error())
+		println(string(body))
 	}
 	return respBody
 }
 
 // 获取某个分类下的视频
-func getArchives(ps int, rid int, pn int, archiveChan chan data.Archive) {
-	respBody := getArchiveData(ps, rid, pn)
+func getArchives(ps int, rid int, pn int, scraper *Scraper) {
+	respBody := getArchiveData(ps, rid, pn, scraper)
 	// get rest pages
 	for respBody.Code != -404 {
 		for _, v := range respBody.Data.Archives {
 			println("[ " + v.Title + "------" + strconv.Itoa(v.Aid) + " ]")
+			time.Sleep(time.Second)
 			// send to channel
-			archiveChan <- v
+			scraper.archiveChan <- v
 		}
 		pn += 1
-		respBody = getArchiveData(ps, rid, pn)
+		respBody = getArchiveData(ps, rid, pn, scraper)
 	}
 }
 
@@ -105,25 +123,25 @@ type Scraper struct {
 	Rids        [] int
 	archiveChan chan data.Archive
 	replyChan   chan data.Reply
+	proxys      []string
 }
 
 func (scraper *Scraper) Start() {
 	for _, rid := range scraper.Rids {
-		go getArchives(20, rid, 1, scraper.archiveChan)
+		go getArchives(20, rid, 1, scraper)
 	}
 	go scraper.ReplyConsume()
 	getArchiveReplies(scraper)
 }
 
 func main() {
-	//getReplies(2, 1, 53278740, 1)
-
-	//getArchives(20, 17, 2)
-
 	scraper := &Scraper{
-		Rids:        []int{17, 189, 15}, // 分类
+		Rids:        []int{17}, // 分类Id
 		archiveChan: make(chan data.Archive),
 		replyChan:   make(chan data.Reply),
+		proxys: []string{
+			"http://127.0.0.1:4397",
+		},
 	}
 	scraper.Start()
 }
